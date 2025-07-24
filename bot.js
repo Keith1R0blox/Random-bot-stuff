@@ -40,4 +40,29 @@ app.listen(3000, () => {
   console.log("Listening on port 3000");
 });
 
+const express = require('express');
+const app = express();
+const PORT = process.env.PORT || 3000;
+
+app.get('/', (req, res) => {
+  res.send('Bot is alive!');
+});
+
+app.get('/pfp', async (req, res) => {
+  const userId = req.query.id;
+
+  if (!userId) return res.status(400).send('Missing user ID');
+
+  try {
+    const user = await client.users.fetch(userId);
+    res.send(user.displayAvatarURL({ dynamic: true, size: 1024 }));
+  } catch (err) {
+    res.status(404).send('User not found');
+  }
+});
+
+app.listen(PORT, () => {
+  console.log(`HTTP server listening on port ${PORT}`);
+});
+
 client.login(process.env.DISCORD_TOKEN);
