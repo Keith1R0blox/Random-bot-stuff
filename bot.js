@@ -6,7 +6,7 @@ const { Client, GatewayIntentBits } = require('discord.js');
 const app = express();
 
 // Discord bot token — replace this with your actual token
-const DISCORD_TOKEN = 'YOUR_DISCORD_BOT_TOKEN';
+const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 
 // Create Discord bot client with basic intents
 const client = new Client({
