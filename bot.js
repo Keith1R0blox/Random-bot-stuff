@@ -21,12 +21,21 @@ client.once('ready', () => {
 
 client.login(DISCORD_TOKEN);
 
-// POST /chatlog?channelId=...
+// POST /chatlog?channelId=...&limit=...
 app.post('/chatlog', async (req, res) => {
   const channelId = req.query.channelId;
 
   if (!channelId) {
     return res.status(400).send('Missing channelId');
+  }
+
+  // Parse and clamp the limit parameter
+  let limit = parseInt(req.query.limit, 10);
+  if (isNaN(limit)) {
+    limit = 10;
+  } else {
+    if (limit < 1) limit = 1;
+    if (limit > 100) limit = 100;
   }
 
   try {
@@ -35,15 +44,7 @@ app.post('/chatlog', async (req, res) => {
       return res.status(404).send('Channel not found or not text-based');
     }
 
-    const messages = let limit = parseInt(req.query.limit, 10);
-if (isNaN(limit)) {
-  limit = 10;
-} else {
-  if (limit < 1) limit = 1;
-  if (limit > 100) limit = 100;
-}
-
-const messages = await channel.messages.fetch({ limit });
+    const messages = await channel.messages.fetch({ limit });
     const sorted = messages.sort((a, b) => a.createdTimestamp - b.createdTimestamp);
 
     const log = sorted.map(msg => {
