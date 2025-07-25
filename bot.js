@@ -6,6 +6,7 @@ app.use(express.json());
 
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 
+// Initialize Discord client
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
@@ -21,7 +22,8 @@ client.once('ready', () => {
 
 client.login(DISCORD_TOKEN);
 
-// POST /chatlog?channelId=...&limit=...
+// Endpoint to fetch chat log
+// Usage: POST /chatlog?channelId=...&limit=10
 app.post('/chatlog', async (req, res) => {
   const channelId = req.query.channelId;
 
@@ -29,13 +31,12 @@ app.post('/chatlog', async (req, res) => {
     return res.status(400).send('Missing channelId');
   }
 
-  // Parse and clamp the limit parameter
+  // Parse and validate limit
   let limit = parseInt(req.query.limit, 10);
   if (isNaN(limit)) {
     limit = 10;
   } else {
-    if (limit < 1) limit = 1;
-    if (limit > 100) limit = 100;
+    limit = Math.max(1, Math.min(limit, 100)); // Clamp between 1 and 100
   }
 
   try {
@@ -63,6 +64,7 @@ app.post('/chatlog', async (req, res) => {
   }
 });
 
+// Start the web server
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`🌐 Web server running at http://localhost:${PORT}`);
