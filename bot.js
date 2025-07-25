@@ -1,49 +1,59 @@
-// Import required modules
 const express = require('express');
-const { Client, GatewayIntentBits } = require('discord.js');
+const { Client, GatewayIntentBits, Partials } = require('discord.js');
 
-// Create express app
 const app = express();
+app.use(express.json());
 
-// Discord bot token — replace this with your actual token
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 
-// Create Discord bot client with basic intents
 const client = new Client({
-  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages]
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.MessageContent
+  ],
+  partials: [Partials.Message, Partials.Channel, Partials.GuildMember]
 });
 
-// Start bot when ready
 client.once('ready', () => {
   console.log(`🤖 Bot logged in as ${client.user.tag}`);
 });
 
-// Login the bot
 client.login(DISCORD_TOKEN);
 
-// Create a GET route to return a user’s avatar URL
-app.get('/pfp', async (req, res) => {
-  const userId = req.query.id;
+// POST /chatlog?channelId=...
+app.post('/chatlog', async (req, res) => {
+  const channelId = req.query.channelId;
 
-  if (!userId) {
-    return res.status(400).send('Missing user ID');
+  if (!channelId) {
+    return res.status(400).send('Missing channelId');
   }
 
   try {
-    const user = await client.users.fetch(userId);
-    if (!user) {
-      return res.status(404).send('User not found');
+    const channel = await client.channels.fetch(channelId);
+    if (!channel?.isTextBased()) {
+      return res.status(404).send('Channel not found or not text-based');
     }
 
-    // Return profile picture URL
-    return res.send(user.displayAvatarURL({ dynamic: true, size: 1024 }));
-  } catch (error) {
-    console.error('Failed to fetch user:', error);
-    return res.status(500).send('Internal error while fetching user');
+    const messages = await channel.messages.fetch({ limit: 10 });
+    const sorted = messages.sort((a, b) => a.createdTimestamp - b.createdTimestamp);
+
+    const log = sorted.map(msg => {
+      const time = new Date(msg.createdTimestamp).toLocaleString();
+      const author = msg.author?.username || 'Unknown';
+      const content = msg.cleanContent || '[No content]';
+      return `[${time}] ${author}: ${content}`;
+    }).join('\n');
+
+    res.setHeader('Content-Type', 'text/plain');
+    return res.send(log);
+
+  } catch (err) {
+    console.error('Error fetching chat log:', err);
+    return res.status(500).send('Error fetching chat log');
   }
 });
 
-// Start the Express server
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`🌐 Web server running at http://localhost:${PORT}`);
