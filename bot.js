@@ -1,12 +1,11 @@
 const express = require('express');
-const { Client, GatewayIntentBits, Partials } = require('discord.js');
+const { Client, GatewayIntentBits, Partials, Collection } = require('discord.js');
 
 const app = express();
 app.use(express.json());
 
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 
-// Initialize Discord client
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
@@ -19,33 +18,44 @@ const client = new Client({
 client.once('ready', () => {
   console.log(`🤖 Bot logged in as ${client.user.tag}`);
 });
-
 client.login(DISCORD_TOKEN);
 
-// Endpoint to fetch chat log
-// Usage: POST /chatlog?channelId=...&limit=10
+// Helper: fetch exactly `n` messages using pagination
+async function fetchMessagesExact(channel, limit) {
+  const out = [];
+  let lastId;
+
+  while (out.length < limit) {
+    const options = { limit: Math.min(100, limit - out.length) };
+    if (lastId) options.before = lastId;
+
+    const fetched = await channel.messages.fetch(options);
+    if (fetched.size === 0) break;
+
+    const arr = [...fetched.values()];
+    out.push(...arr);
+    lastId = arr[arr.length - 1].id;
+
+    if (fetched.size < options.limit) break;
+  }
+
+  return out;
+}
+
 app.post('/chatlog', async (req, res) => {
   const channelId = req.query.channelId;
-
-  if (!channelId) {
-    return res.status(400).send('Missing channelId');
-  }
-
-  // Parse and validate limit
   let limit = parseInt(req.query.limit, 10);
-  if (isNaN(limit)) {
-    limit = 10;
-  } else {
-    limit = Math.max(1, Math.min(limit, 100)); // Clamp between 1 and 100
-  }
+
+  if (!channelId) return res.status(400).send('Missing channelId');
+
+  if (isNaN(limit)) limit = 10;
+  limit = Math.max(1, Math.min(limit, 100));
 
   try {
     const channel = await client.channels.fetch(channelId);
-    if (!channel?.isTextBased()) {
-      return res.status(404).send('Channel not found or not text-based');
-    }
+    if (!channel?.isTextBased()) return res.status(404).send('Not a text channel');
 
-    const messages = await channel.messages.fetch({ limit });
+    const messages = await fetchMessagesExact(channel, limit);
     const sorted = messages.sort((a, b) => a.createdTimestamp - b.createdTimestamp);
 
     const log = sorted.map(msg => {
@@ -59,13 +69,10 @@ app.post('/chatlog', async (req, res) => {
     return res.send(log);
 
   } catch (err) {
-    console.error('Error fetching chat log:', err);
+    console.error('❌ Error fetching chat log:', err);
     return res.status(500).send('Error fetching chat log');
   }
 });
 
-// Start the web server
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`🌐 Web server running at http://localhost:${PORT}`);
-});
+app.listen(PORT, () => console.log(`🌐 Web server on port ${PORT}`));
