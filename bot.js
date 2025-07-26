@@ -1,12 +1,11 @@
 const express = require('express');
 const multer = require('multer');
-const { Client, GatewayIntentBits, Partials } = require('discord.js');
 const crypto = require('crypto');
+const { Client, GatewayIntentBits, Partials } = require('discord.js');
 
 const app = express();
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
 const upload = multer();
+app.use(express.json());
 
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 const DATABASE_CHANNEL_ID = '1398279525208424539';
@@ -21,40 +20,82 @@ const client = new Client({
 });
 
 client.once('ready', () => {
-  console.log(`🤖 Logged in as ${client.user.tag}`);
+  console.log(`🤖 Bot logged in as ${client.user.tag}`);
 });
 
 client.login(DISCORD_TOKEN);
 
-// Generate a secure random token
-function generateToken(length = 8) {
+// Generate a random token
+function generateToken(length = 16) {
   return crypto.randomBytes(length).toString('hex');
 }
 
-// ========== /signup ==========
+// === PFP endpoint ===
+app.get('/pfp', async (req, res) => {
+  const userId = req.query.id;
+  if (!userId) return res.status(400).send('Missing user ID');
+
+  try {
+    const user = await client.users.fetch(userId);
+    return res.send(user.displayAvatarURL({ dynamic: true, size: 1024 }));
+  } catch {
+    return res.status(404).send('User not found');
+  }
+});
+
+// === CHATLOG endpoint ===
+app.post('/chatlog', async (req, res) => {
+  const channelId = req.query.channelId;
+  let limit = parseInt(req.query.limit) || 10;
+  limit = Math.min(Math.max(limit, 1), 100);
+
+  if (!channelId) return res.status(400).send('Missing channelId');
+
+  try {
+    const channel = await client.channels.fetch(channelId);
+    if (!channel?.isTextBased()) return res.status(404).send('Invalid channel');
+
+    const messages = await channel.messages.fetch({ limit });
+    const sorted = messages.sort((a, b) => a.createdTimestamp - b.createdTimestamp);
+
+    const log = sorted.map(msg => {
+      const time = new Date(msg.createdTimestamp).toLocaleString();
+      const user = msg.author?.username || 'Unknown';
+      const content = msg.cleanContent || '[No content]';
+      return `[${time}] ${user}: ${content}`;
+    }).join('\n');
+
+    res.setHeader('Content-Type', 'text/plain');
+    return res.send(log);
+  } catch (err) {
+    console.error(err);
+    return res.status(500).send('Error fetching chat log');
+  }
+});
+
+// === SIGNUP endpoint ===
 app.post('/signup', async (req, res) => {
   const username = req.body.username;
   if (!username) return res.status(400).send('Missing username');
 
   try {
     const dbChannel = await client.channels.fetch(DATABASE_CHANNEL_ID);
-    if (!dbChannel?.isTextBased()) return res.status(500).send('Invalid DB channel');
+    const msgs = await dbChannel.messages.fetch({ limit: 100 });
+    const exists = msgs.find(m => m.content.includes(`Username: ${username}\nToken:`));
 
-    const messages = await dbChannel.messages.fetch({ limit: 100 });
-    const exists = messages.some(msg => msg.content.startsWith(`Username: ${username}\n`));
-    if (exists) return res.status(400).send('Username already registered');
+    if (exists) return res.status(409).send('Username already exists');
 
     const token = generateToken(8);
     await dbChannel.send(`Username: ${username}\nToken: ${token}`);
     return res.json({ username, token });
   } catch (err) {
     console.error(err);
-    return res.status(500).send('Server error during signup');
+    return res.status(500).send('Signup error');
   }
 });
 
-// ========== /login ==========
-app.post('/login', upload.single('file'), async (req, res) => {
+// === LOGIN endpoint ===
+app.post('/login', upload.single('token'), async (req, res) => {
   const username = req.body.username;
   const token = req.file?.buffer?.toString().trim();
 
@@ -62,63 +103,19 @@ app.post('/login', upload.single('file'), async (req, res) => {
 
   try {
     const dbChannel = await client.channels.fetch(DATABASE_CHANNEL_ID);
-    const messages = await dbChannel.messages.fetch({ limit: 100 });
+    const msgs = await dbChannel.messages.fetch({ limit: 100 });
+    const matched = msgs.find(m => m.content.includes(`Username: ${username}\nToken: ${token}`));
 
-    const match = messages.find(msg =>
-      msg.content.startsWith(`Username: ${username}\n`) &&
-      msg.content.includes(`Token: ${token}`)
-    );
-
-    if (!match) return res.status(401).send('Invalid credentials');
+    if (!matched) return res.status(403).send('Invalid credentials');
     return res.send('Login successful');
   } catch (err) {
     console.error(err);
-    return res.status(500).send('Server error during login');
+    return res.status(500).send('Login error');
   }
 });
 
-// ========== /chatlog ==========
-app.get('/chatlog', async (req, res) => {
-  const channelId = req.query.channelId;
-  const limit = parseInt(req.query.limit) || 10;
-
-  if (!channelId) return res.status(400).send('Missing channelId');
-
-  try {
-    const channel = await client.channels.fetch(channelId);
-    if (!channel?.isTextBased()) return res.status(400).send('Invalid channel');
-
-    const messages = await channel.messages.fetch({ limit });
-    const formatted = messages
-      .map(m => `${m.author.tag}: ${m.content}`)
-      .reverse();
-
-    return res.json({ messages: formatted });
-  } catch (err) {
-    console.error(err);
-    return res.status(500).send('Error fetching messages');
-  }
-});
-
-// ========== /pfp ==========
-app.get('/pfp', async (req, res) => {
-  const userId = req.query.id;
-  if (!userId) return res.status(400).send('Missing user ID');
-
-  try {
-    const user = await client.users.fetch(userId);
-    if (!user) return res.status(404).send('User not found');
-
-    const avatarURL = user.displayAvatarURL({ dynamic: true, size: 1024 });
-    return res.send(avatarURL);
-  } catch (err) {
-    console.error(err);
-    return res.status(500).send('Error fetching user');
-  }
-});
-
-// ========== Start Server ==========
+// === Start server ===
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`🌐 Server listening on port ${PORT}`);
+  console.log(`🌐 Server running at http://localhost:${PORT}`);
 });
