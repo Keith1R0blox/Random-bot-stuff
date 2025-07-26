@@ -1,29 +1,33 @@
 const express = require('express');
+const { Client, GatewayIntentBits, Partials } = require('discord.js');
 const multer = require('multer');
-const { Client, GatewayIntentBits } = require('discord.js');
 const fs = require('fs');
-const upload = multer();
+const axios = require('axios');
+
 const app = express();
-
-const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
-const PORT = process.env.PORT || 3000;
-const DATABASE_CHANNEL_ID = '1398279525208424539';
-
+const upload = multer();
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 const client = new Client({
-  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent]
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.MessageContent
+  ],
+  partials: [Partials.Message, Partials.Channel]
 });
+
+const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
+const PRIVATE_DB_CHANNEL_ID = '1398279525208424539';
+const WEBHOOK_URL = process.env.WEBHOOK_URL;
 
 client.once('ready', () => {
-  console.log(`🤖 Bot is online as ${client.user.tag}`);
+  console.log(`🤖 Logged in as ${client.user.tag}`);
 });
-
-// LOGIN BOT
 client.login(DISCORD_TOKEN);
 
-// PFP ENDPOINT
+// /pfp?id=...
 app.get('/pfp', async (req, res) => {
   const userId = req.query.id;
   if (!userId) return res.status(400).send('Missing user ID');
@@ -31,82 +35,103 @@ app.get('/pfp', async (req, res) => {
     const user = await client.users.fetch(userId);
     return res.send(user.displayAvatarURL({ dynamic: true, size: 1024 }));
   } catch {
-    return res.status(404).send('User not found');
+    return res.status(500).send('Error fetching avatar');
   }
 });
 
-// CHATLOG ENDPOINT
+// /chatlog?channelId=...&limit=...
 app.post('/chatlog', async (req, res) => {
-  const { channelId, limit } = req.body;
-  if (!channelId) return res.status(400).send('Missing channelId');
-  const msgLimit = parseInt(limit) || 10;
+  const channelId = req.query.channelId;
+  const limit = parseInt(req.query.limit) || 10;
 
   try {
     const channel = await client.channels.fetch(channelId);
-    const messages = await channel.messages.fetch({ limit: msgLimit });
-    const output = messages.map(m => `[${m.author.username}] ${m.content}`).reverse().join('\n');
-    return res.send(output);
+    const messages = await channel.messages.fetch({ limit });
+    const sorted = messages.sort((a, b) => a.createdTimestamp - b.createdTimestamp);
+
+    const log = sorted.map(m => {
+      const time = new Date(m.createdTimestamp).toLocaleString();
+      const author = m.author?.username || 'Unknown';
+      const content = m.cleanContent || '[No content]';
+      return `[${time}] ${author}: ${content}`;
+    }).join('\n');
+
+    res.setHeader('Content-Type', 'text/plain');
+    res.send(log);
   } catch {
-    return res.status(500).send('Failed to fetch messages');
+    res.status(500).send('Error fetching chat log');
   }
 });
 
-// SIGNUP ENDPOINT
+// /signup
 app.post('/signup', async (req, res) => {
-  const username = req.body.username;
+  const { username } = req.body;
   if (!username) return res.status(400).send('Missing username');
 
-  const dbChannel = await client.channels.fetch(DATABASE_CHANNEL_ID);
+  const dbChannel = await client.channels.fetch(PRIVATE_DB_CHANNEL_ID);
   const messages = await dbChannel.messages.fetch({ limit: 100 });
-  const exists = messages.find(m => m.content.includes(`Username: ${username}`));
 
+  const exists = messages.some(m => m.content.startsWith(`Username: ${username}\n`));
   if (exists) return res.status(400).send('Username already exists');
 
-  const token = Math.random().toString(36).substring(2, 12);
+  const token = Math.random().toString(36).slice(2, 10);
   await dbChannel.send(`Username: ${username}\nToken: ${token}`);
-  return res.send({ username, token });
+  res.send(`Your token is: ${token}`);
 });
 
-// LOGIN ENDPOINT
+// /login
 app.post('/login', upload.single('token'), async (req, res) => {
-  const username = req.body.username;
-  const token = req.file ? req.file.buffer.toString().trim() : req.body.token;
+  const { username } = req.body;
+  let token = req.body.token;
+
+  if (req.file && !token) token = req.file.buffer.toString().trim();
   if (!username || !token) return res.status(400).send('Missing username or token');
 
-  const dbChannel = await client.channels.fetch(DATABASE_CHANNEL_ID);
+  const dbChannel = await client.channels.fetch(PRIVATE_DB_CHANNEL_ID);
   const messages = await dbChannel.messages.fetch({ limit: 100 });
-  const match = messages.find(m =>
-    m.content.includes(`Username: ${username}`) && m.content.includes(`Token: ${token}`)
+
+  const found = messages.find(m =>
+    m.content.includes(`Username: ${username}\n`) &&
+    m.content.includes(`Token: ${token}`)
   );
 
-  if (!match) return res.status(401).send('Invalid credentials');
-  return res.send('Login successful');
+  if (!found) return res.status(403).send('Invalid credentials');
+  res.send('Login successful');
 });
 
-// SECURE SEND MESSAGE ENDPOINT
-app.post('/send', async (req, res) => {
-  const { username, token, channelId, message } = req.body;
-  if (!username || !token || !channelId || !message)
-    return res.status(400).send('Missing required fields');
+// /send (requires username + token)
+app.post('/send', upload.single('token'), async (req, res) => {
+  const { username, content, avatar } = req.body;
+  let token = req.body.token;
+  if (req.file && !token) token = req.file.buffer.toString().trim();
 
-  const dbChannel = await client.channels.fetch(DATABASE_CHANNEL_ID);
+  if (!username || !token || !content)
+    return res.status(400).send('Missing username, token, or content');
+
+  const dbChannel = await client.channels.fetch(PRIVATE_DB_CHANNEL_ID);
   const messages = await dbChannel.messages.fetch({ limit: 100 });
-  const match = messages.find(m =>
-    m.content.includes(`Username: ${username}`) && m.content.includes(`Token: ${token}`)
+
+  const isValid = messages.find(m =>
+    m.content.includes(`Username: ${username}\n`) &&
+    m.content.includes(`Token: ${token}`)
   );
 
-  if (!match) return res.status(401).send('Invalid credentials');
+  if (!isValid) return res.status(403).send('Invalid credentials');
 
   try {
-    const targetChannel = await client.channels.fetch(channelId);
-    await targetChannel.send(message);
-    return res.send('Message sent!');
-  } catch {
-    return res.status(500).send('Failed to send message');
+    await axios.post(WEBHOOK_URL, {
+      username: username,
+      avatar_url: avatar || undefined,
+      content: content
+    });
+    res.send('Message sent successfully');
+  } catch (err) {
+    console.error('Webhook error:', err.message);
+    res.status(500).send('Error sending message');
   }
 });
 
-// START EXPRESS SERVER
+const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`🌐 Web server running on http://localhost:${PORT}`);
+  console.log(`🌐 Server running on http://localhost:${PORT}`);
 });
