@@ -1,15 +1,18 @@
 const express = require('express');
 const multer = require('multer');
-const fs = require('fs');
 const { Client, GatewayIntentBits, Partials } = require('discord.js');
+const crypto = require('crypto');
 
+// === Setup Express ===
 const app = express();
-const upload = multer({ dest: 'uploads/' });
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+const upload = multer();
 
+// === Discord Setup ===
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
-const DATABASE_CHANNEL_ID = '1398279525208424539';
+const DATABASE_CHANNEL_ID = '1398279525208424539'; // Your private database channel
 
-// Discord bot setup
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
@@ -25,79 +28,74 @@ client.once('ready', () => {
 
 client.login(DISCORD_TOKEN);
 
-// Helper to find username message
-async function findUserEntry(channel, username) {
-  const messages = await channel.messages.fetch({ limit: 100 });
-  return messages.find(msg =>
-    msg.content.startsWith(`Username: ${username}\nToken:`)
-  );
+// === Helper Function: Generate Token ===
+function generateToken(length = 16) {
+  return crypto.randomBytes(length).toString('hex');
 }
 
-// ========== SIGNUP ==========
+// === SIGNUP Endpoint ===
 app.post('/signup', async (req, res) => {
-  const username = req.query.username;
-  if (!username) return res.status(400).send('Missing username');
+  const username = req.body.username;
+
+  if (!username) {
+    return res.status(400).send('Missing username');
+  }
 
   try {
-    const channel = await client.channels.fetch(DATABASE_CHANNEL_ID);
-    const existing = await findUserEntry(channel, username);
-    if (existing) return res.status(400).send('Username already exists');
+    const dbChannel = await client.channels.fetch(DATABASE_CHANNEL_ID);
+    if (!dbChannel?.isTextBased()) {
+      return res.status(500).send('Database channel not found');
+    }
 
-    const token = Math.random().toString(36).substring(2, 10);
-    await channel.send(`Username: ${username}\nToken: ${token}`);
-    res.send(`✅ Account created!\nUsername: ${username}\nToken: ${token}`);
+    // Check for existing user
+    const messages = await dbChannel.messages.fetch({ limit: 100 });
+    const userExists = messages.some(msg => msg.content.startsWith(`Username: ${username}\n`));
+
+    if (userExists) {
+      return res.status(400).send('Username already registered');
+    }
+
+    const token = generateToken(8); // 16 hex chars
+    await dbChannel.send(`Username: ${username}\nToken: ${token}`);
+    return res.status(200).json({ username, token });
+
   } catch (err) {
     console.error('Signup error:', err);
-    res.status(500).send('Internal server error');
+    return res.status(500).send('Internal server error');
   }
 });
 
-// ========== LOGIN ==========
-app.post('/login', upload.single('tokenFile'), async (req, res) => {
-  const username = req.query.username;
-  if (!username || !req.file) {
+// === LOGIN Endpoint ===
+app.post('/login', upload.single('file'), async (req, res) => {
+  const username = req.body.username;
+  const tokenFromFile = req.file?.buffer?.toString().trim();
+
+  if (!username || !tokenFromFile) {
     return res.status(400).send('Missing username or token file');
   }
 
   try {
-    const channel = await client.channels.fetch(DATABASE_CHANNEL_ID);
-    const userMsg = await findUserEntry(channel, username);
-    if (!userMsg) return res.status(404).send('User not found');
+    const dbChannel = await client.channels.fetch(DATABASE_CHANNEL_ID);
+    const messages = await dbChannel.messages.fetch({ limit: 100 });
 
-    const expectedToken = userMsg.content.split('Token: ')[1].trim();
-    const fileToken = fs.readFileSync(req.file.path, 'utf8').trim();
+    const matched = messages.find(msg =>
+      msg.content.startsWith(`Username: ${username}\n`) &&
+      msg.content.includes(`Token: ${tokenFromFile}`)
+    );
 
-    // Delete uploaded file after reading
-    fs.unlinkSync(req.file.path);
-
-    if (fileToken === expectedToken) {
-      return res.send('✅ Login successful');
-    } else {
-      return res.status(401).send('❌ Invalid token');
+    if (!matched) {
+      return res.status(401).send('Invalid credentials');
     }
+
+    return res.status(200).send('Login successful!');
   } catch (err) {
     console.error('Login error:', err);
-    res.status(500).send('Internal server error');
+    return res.status(500).send('Internal error');
   }
 });
 
-// OPTIONAL: MESSAGE SENDER
-app.post('/send-message', async (req, res) => {
-  const { channelId, message } = req.query;
-  if (!channelId || !message) return res.status(400).send('Missing channelId or message');
-
-  try {
-    const channel = await client.channels.fetch(channelId);
-    if (!channel?.isTextBased()) return res.status(400).send('Invalid text channel');
-
-    await channel.send(message);
-    res.send('✅ Message sent!');
-  } catch (err) {
-    console.error('Send message error:', err);
-    res.status(500).send('Internal server error');
-  }
-});
-
-// Start web server
+// === Start Server ===
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`🌍 Server running on port ${PORT}`));
+app.listen(PORT, () => {
+  console.log(`🌐 Server running on port ${PORT}`);
+});
