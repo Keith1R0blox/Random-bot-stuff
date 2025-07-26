@@ -90,7 +90,7 @@ app.post('/login', upload.single('tokenFile'), async (req, res) => {
   const fileToken = req.file ? req.file.buffer.toString('utf-8').trim() : null;
 
   if (!username) return res.status(400).send('Missing username');
-  const tokenToCheck = fileToken || token;
+  const tokenToCheck = (fileToken || token || '').trim();
   if (!tokenToCheck) return res.status(400).send('Missing token');
 
   try {
